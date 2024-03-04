@@ -1,34 +1,38 @@
+import logging
 from flask import Flask, request, jsonify, abort
 import socket
 import json
 import requests
 
+
 app = Flask(__name__)
+app.debug = True
+
+# Configure logging
+logging.basicConfig(filename='debug.log', level=logging.DEBUG)
 
 
+# Function to perform a DNS query
 def dns_query(as_ip, as_port, hostname):
-    """
-    Perform a DNS query to the Authoritative Server to resolve the hostname to an IP address.
-    """
-    try:
-        # Set up the socket
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            server_address = (as_ip, int(as_port))
-            message = json.dumps({"Name": hostname, "Type": "A"}).encode()
+    # DNS query message
+    dns_query_message = f'TYPE=A\nNAME={hostname}\n'
 
-            # Send the DNS query
-            sock.sendto(message, server_address)
+    # Send the DNS query message to AS via UDP
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.sendto(dns_query_message.encode(), (as_ip, as_port))
+        # Wait for the response from AS
+        data, _ = sock.recvfrom(1024)
+        response_data = data.decode().split('\n')
+        response = {line.split('=')[0]: line.split('=')[1]
+                    for line in response_data if '=' in line}
 
-            # Wait for the response
-            data, _ = sock.recvfrom(4096)
-            response = json.loads(data.decode())
-
-            return response.get('Address')
-    except Exception as e:
-        print(f"DNS Query Error: {e}")
-        return None
+        if 'VALUE' in response:
+            return response['VALUE']
+        else:
+            raise Exception('Failed to resolve hostname')
 
 
+# Route to handle fibonacci requests
 @app.route('/fibonacci')
 def fibonacci():
     # Extract parameters from the request
@@ -42,22 +46,19 @@ def fibonacci():
     if not all([hostname, fs_port, number, as_ip, as_port]):
         abort(400, 'Bad request. Please make sure all parameters are provided.')
 
-    # Perform DNS query to resolve the hostname to an IP address
-    fs_ip = dns_query(as_ip, as_port, hostname)
-    if fs_ip is None:
-        abort(500, 'Failed to resolve the hostname through the DNS query.')
+    # Perform DNS query to get the IP address of FS
+    fs_ip = dns_query(as_ip, int(as_port), hostname)
+    if not fs_ip:
+        abort(500, 'DNS query failed.')
 
-    # Perform a GET request to the Fibonacci Service
-    try:
-        fs_url = f"http://{fs_ip}:{fs_port}/fibonacci?number={number}"
-        response = requests.get(fs_url)
-        if response.status_code == 200:
-            return jsonify({"fibonacci_sequence": response.json()}), 200
-        else:
-            return "Failed to retrieve the Fibonacci sequence from FS.", response.status_code
-    except Exception as e:
-        print(f"GET Request to FS Error: {e}")
-        abort(500, 'Failed to make a GET request to the Fibonacci Service.')
+    # Make an HTTP GET request to the FS using the IP address retrieved from the DNS query
+    fs_url = f'http://{fs_ip}:{fs_port}/fibonacci?number={number}'
+    response = requests.get(fs_url)
+
+    if response.status_code == 200:
+        return jsonify(response.json()), 200
+    else:
+        abort(response.status_code, response.text)
 
 
 @app.route('/test')

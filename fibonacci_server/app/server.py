@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify
+import socket
+import json
 
 app = Flask(__name__)
 
@@ -9,18 +11,28 @@ registered_hosts = {}
 @app.route('/register', methods=['PUT'])
 def register():
     data = request.get_json()
-    # Store the hostname and its details
     hostname = data.get('hostname')
     fs_ip = data.get('ip')
     as_ip = data.get('as_ip')
-    as_port = data.get('as_port')
+    as_port = int(data.get('as_port'))
+
     if hostname and fs_ip and as_ip and as_port:
-        registered_hosts[hostname] = {
-            'fs_ip': fs_ip,
-            'as_ip': as_ip,
-            'as_port': as_port
-        }
-        return jsonify({'message': 'Registration successful'}), 200
+        dns_message = f'TYPE=A\nNAME={hostname}\nVALUE={fs_ip}\nTTL=10\n'
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(dns_message.encode(), (as_ip, as_port))
+
+            try:
+                sock.settimeout(20)  # Set timeout for waiting for a response
+                data, _ = sock.recvfrom(1024)
+                response = data.decode()
+
+                if "successful" in response.lower():
+                    return jsonify({"status": "Registration successful"}), 201
+                else:
+                    return jsonify({"status": "Registration failed", "message": response}), 500
+            except socket.timeout:
+                return jsonify({"error": "No response from Authoritative Server"}), 408
     else:
         return jsonify({'error': 'Missing parameters'}), 400
 
